@@ -46,6 +46,17 @@ export type PublicShare = {
   expiresAt: string | null;
 };
 
+function friendlyError(status: number, raw: string, parsedMessage?: string): string {
+  if (status === 413 || /request entity too large/i.test(raw)) {
+    return "That file is too large. The maximum upload size is 25 MB.";
+  }
+  if (parsedMessage && !parsedMessage.includes("<")) return parsedMessage;
+  if (raw.includes("<html") || raw.trim().startsWith("<")) {
+    return "Upload failed. Please try a smaller file (25 MB max).";
+  }
+  return parsedMessage || raw || "Request failed";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -62,11 +73,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       data = JSON.parse(raw) as T & { message?: string };
     } catch {
-      data = { message: raw } as T & { message?: string };
+      data = {} as T & { message?: string };
     }
   }
   if (!response.ok) {
-    throw new Error(data.message || "Request failed");
+    throw new Error(friendlyError(response.status, raw, data.message));
   }
   return data;
 }

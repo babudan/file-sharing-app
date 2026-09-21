@@ -31,9 +31,15 @@ export function WorkspacePage({ user }: { user: User }) {
 
   async function onUpload(files: FileList | null) {
     if (!files?.[0]) return;
+    const file = files[0];
     setError("");
+    const maxBytes = 25 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setError(`"${file.name}" is ${formatBytes(file.size)}. The maximum upload size is 25 MB.`);
+      return;
+    }
     try {
-      await api.upload(workspaceId, files[0]);
+      await api.upload(workspaceId, file);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
