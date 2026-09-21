@@ -15,12 +15,24 @@ docker compose up --build
 
 Open [http://localhost:8080](http://localhost:8080).
 
-MinIO is pulled from `quay.io/minio/minio` (the current official image; Docker Hub no longer serves it). Postgres and Node images still come from Docker Hub.
+MinIO is pulled from `quay.io/minio/minio` (Docker Hub no longer serves it). Postgres and Node images still come from Docker Hub.
 
 1. Register an account. A **Personal** workspace is created for you.
-2. Create a team workspace, upload a file, and invite a colleague by email.
-3. Open the invitation URL (shown in the UI, and emailed if SendGrid is configured) in another browser/session after registering with that email.
+2. Create a team workspace, upload a file (25 MB max), and invite a colleague by email.
+3. Open the invitation URL (shown in the UI, and emailed if SendGrid is configured) after registering with that same email.
 4. Create a share link and open it while signed out.
+
+Stop when you are done (data in Docker volumes is kept):
+
+```bash
+docker compose down
+```
+
+Start again later without rebuilding:
+
+```bash
+docker compose up -d
+```
 
 Tests (from `api/`):
 
@@ -39,7 +51,7 @@ Browser  →  nginx (:8080)  →  React SPA
 
 - **API** owns auth, authorization, and streaming downloads. MinIO is not published to the host.
 - **Postgres** stores users, workspaces, memberships, invitations, document metadata, and share links. File contents never go in the database.
-- **Storage** is behind `ObjectStorage` (`put` / `getStream` / `delete`). The S3 implementation is the only one shipped; swapping to disk would be a new class with the same interface.
+- **Storage** is behind `ObjectStorage` (`put` / `getStream` / `delete`). The S3 implementation talks to MinIO locally; swapping to real S3 is an env-var change.
 - **Web** is a React SPA. In Docker it is same-origin with the API via nginx, so session cookies work without cross-site gymnastics.
 
 ## Assumptions and decisions
@@ -47,7 +59,9 @@ Browser  →  nginx (:8080)  →  React SPA
 The brief left several product gaps. These are the calls I made.
 
 ### Accounts and sessions
-Email + password. Session is an **httpOnly** JWT cookie (`fs_session`, 7 days, `SameSite=Lax`). I chose cookies over `localStorage` so XSS in the SPA cannot steal the token. There is no email verification; for a weekend take-home that is the usual trade-off.
+Email + password. Session is an **httpOnly** JWT cookie (`fs_session`, 7 days, `SameSite=Lax`). I chose cookies over `localStorage` so XSS in the SPA cannot steal the token.
+
+Login and register are rate-limited (**50 failed attempts per 15 minutes**). `/api/auth/me` is not, because the UI calls it on navigation.
 
 ### Where files live
 Every document belongs to a **workspace**. On signup I auto-create a Personal workspace so the first upload does not require extra ceremony. Team workspaces are separate; Personal cannot have extra members (create a team workspace instead).
@@ -66,31 +80,41 @@ All members of a workspace can see and download every document in it. A small te
 Removing a member does **not** delete files they uploaded. The workspace owns the document.
 
 ### Invitations for people without an account
-Invite by email. That creates a pending invitation (7-day expiry) and a URL. If `SENDGRID_API_KEY` and `SENDGRID_FROM_EMAIL` are set, Ledger also sends the link through SendGrid. If they are missing or SendGrid fails, the invite is still created and the URL is shown in the UI. The invitee must register/sign in with **exactly that email**, then accept. Wrong account → rejected. I did not auto-add existing users: they should see that they were invited.
+Invite by email. That creates a pending invitation (**7-day expiry**) and a URL. The invitee must register/sign in with **exactly that email**, then accept. Wrong account → rejected.
 
-To enable email: create a SendGrid API key, verify the from-address (Sender Authentication), put both values in `.env`, then `docker compose up -d --force-recreate api`.
+If `SENDGRID_API_KEY` and `SENDGRID_FROM_EMAIL` are set, the same link is emailed. If they are missing or SendGrid fails, the invite is still created and the URL is shown in the UI.
+
+To enable email:
+
+1. Create a SendGrid API key (it must start with `SG.` — Mailgun keys will not work).
+2. Verify the from-address under Sender Authentication.
+3. Put both values in `.env` (never commit `.env`).
+4. Recreate the API: `docker compose up -d --force-recreate api`.
+
+`SENDGRID_FROM_NAME` is only the display name in the inbox (for example `Ledger`), not the sending address.
 
 ### Share links
 A link is a 256-bit random `base64url` token (not a sequential id). Anyone with the URL can download, including signed-out users.
 
-Defaults I chose:
-- Optional expiry (UI defaults to 72 hours; omit for no expiry).
-- Optional max download count.
-- Optional password (this is the product improvement).
+Each **Create link** makes a **new independent URL**. You can have several for the same file (different people, expiry, or password). **Revoke** turns off only that one link. The UI copies the newest URL and lists active links with Copy / Revoke.
+
+Options:
+- **Expires in hours** — the link dies after that time (UI default 72). Independent of downloads.
+- **Max downloads** — the link dies after that many successful downloads (empty = no cap). The public page shows remaining downloads.
+- **Password (optional)** — public page asks for it before showing the filename or allowing download. Unlock is a short-lived httpOnly cookie.
+
+Also:
 - Download-only. The outsider cannot list the workspace or upload.
-- Creator (or any workspace member) can revoke.
 - Deleted documents make the link look invalid (404), not “this used to exist”.
-
-Guessing tokens is not a practical attack; I still rate-limit the public share routes.
-
-### Deletion
-Documents are **soft-deleted** so share checks and audit-ish history stay coherent. The object is then deleted from MinIO best-effort. Workspace delete **cascades** metadata and is blocked for Personal. Orphan objects are possible if the process crashes between DB and S3; see “with more time”.
+- Public share/download responses are not cached, so a used-up one-download link does not keep working from the browser cache.
 
 ### Uploads
-25MB cap. Allow-list of document/image/zip/text types. Original filename is sanitized and **not** used as the object key prefix; keys look like `workspaces/{workspaceId}/documents/{documentId}/{filename}`. Files are downloaded as `Content-Disposition: attachment` through the API, never as a public MinIO URL.
+**25 MB** cap, checked in the browser first so oversized files get a plain message (not nginx HTML). Allow-list of document/image/zip/text types. Original filename is sanitized and **not** used as the object key prefix; keys look like `workspaces/{workspaceId}/documents/{documentId}/{filename}`. Files are downloaded as `Content-Disposition: attachment` through the API, never as a public MinIO URL.
 
-### File size in memory
-Multer buffers the file, then `PutObject`. Fine at 25MB; I would stream multipart to S3 if the limit grew.
+Multer buffers the file, then `PutObject`. Fine at 25 MB; I would stream multipart to S3 if the limit grew.
+
+### Deletion
+Documents are **soft-deleted**. The object is then deleted from MinIO best-effort. Workspace delete **cascades** metadata and is blocked for Personal. Orphan objects are possible if the process crashes between DB and S3.
 
 ## Security considerations
 
@@ -98,15 +122,16 @@ Addressed:
 - Authorization is membership-based. Another user’s workspace/document returns **404**, not 403, so you cannot probe ids.
 - Storage is not exposed. No public bucket, no presigned URLs in the client.
 - Share tokens are long and random. Passwords on links are bcrypt-hashed like account passwords.
-- Auth and public download routes are rate-limited.
+- Login/register and public share routes are rate-limited.
 - Helmet, cookie flags, `X-Content-Type-Options: nosniff`, attachment downloads.
 - SQL via Prisma parameterized queries.
+- `.env` is gitignored. `.env.example` has empty placeholders only.
 
 Knowingly left:
 - No virus scanning, no malware sandbox.
 - No CSRF token (same-site cookie + JSON API; fine for this app, not for arbitrary cross-site form posts).
 - No SSO, 2FA, or email verification.
-- JWT secret defaults in compose — change `JWT_SECRET` in `.env` before any real use.
+- Change `JWT_SECRET` in `.env` before any real use.
 - MinIO credentials are local demo defaults.
 - Share unlock is a second httpOnly cookie; one active unlock at a time per browser.
 - Uploads sit in API memory briefly (DoS surface if you raised the size limit without streaming).
@@ -128,18 +153,21 @@ I used **Cursor**. I pointed it at the assignment PDF, required Node.js + TypeSc
 
 What I delegated: project layout, Prisma schema/migration, Docker Compose, React UI, and the first pass of services/routes.
 
-Where I steered or would push back in a review:
-- Storage and authorization must not live in route handlers. The agent’s first shape already split `ObjectStorage` and domain helpers; I kept tests on those helpers (permissions, share access, filename sanitization) because those are the parts that would embarrass me if they broke.
+Where I steered after using the app:
 - Share links must not be guessable, and MinIO must stay off the public network. Compose publishes only `:8080`.
 - Invitations for users who do not exist yet need an explicit accept step, not silent account creation.
+- Rate-limiting `/api/auth/me` together with login locked testers out; the limiter now applies only to login/register.
+- Oversized uploads were hitting nginx `413` HTML; the UI now checks 25 MB first.
+- One-download share links looked reusable because the browser cached the page/file; downloads are no-store and the public page shows remaining count.
+- SendGrid keys must start with `SG.` (Mailgun sending keys will not work).
 - I would not accept a design that stored files in Postgres or served the bucket directly to the browser.
 
-The follow-up interview can walk `domain/permissions.ts`, `domain/shareAccess.ts`, `services/documentService.ts`, and `storage.ts` — those are the decisions, not the CSS.
+The follow-up interview can walk `domain/permissions.ts`, `domain/shareAccess.ts`, `services/documentService.ts`, and `storage.ts`.
 
 ## What I’d do next with more time
 
 - Stream uploads to S3 and add a background janitor for orphaned objects / expired shares.
-- “File shared with you” notifications (invites already email via SendGrid).
+- “File shared with you” notifications (workspace invites already email via SendGrid).
 - Folders + search inside a workspace.
 - Document versioning (keep prior objects, point metadata at the current key).
 - Audit log of downloads and membership changes.
@@ -150,7 +178,7 @@ The follow-up interview can walk `domain/permissions.ts`, `domain/shareAccess.ts
 ```bash
 docker compose up db minio
 # terminal 1
-cd api && cp ../.env.example .env && npx prisma migrate deploy && npm run dev
+cd api && npx prisma migrate deploy && npm run dev
 # terminal 2
 cd web && npm run dev
 ```
