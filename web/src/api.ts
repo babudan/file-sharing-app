@@ -44,6 +44,8 @@ export type PublicShare = {
   sizeBytes: number | null;
   mimeType: string | null;
   expiresAt: string | null;
+  maxDownloads: number | null;
+  downloadCount: number;
 };
 
 function friendlyError(status: number, raw: string, parsedMessage?: string): string {
@@ -60,6 +62,7 @@ function friendlyError(status: number, raw: string, parsedMessage?: string): str
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
+    cache: "no-store",
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),

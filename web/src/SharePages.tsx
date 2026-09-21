@@ -55,6 +55,7 @@ export function PublicSharePage() {
   const { token = "" } = useParams();
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [share, setShare] = useState<Awaited<ReturnType<typeof api.publicShare>>["share"] | null>(null);
 
   async function load() {
@@ -63,7 +64,10 @@ export function PublicSharePage() {
   }
 
   useEffect(() => {
-    void load().catch((err: unknown) => setError(err instanceof Error ? err.message : "Link is not valid"));
+    void load().catch((err: unknown) => {
+      setShare(null);
+      setError(err instanceof Error ? err.message : "Link is not valid");
+    });
   }, [token]);
 
   async function unlock(event: FormEvent) {
@@ -76,6 +80,30 @@ export function PublicSharePage() {
       setError(err instanceof Error ? err.message : "Could not unlock");
     }
   }
+
+  async function download() {
+    if (!share?.filename) return;
+    setBusy(true);
+    setError("");
+    const link = document.createElement("a");
+    link.href = `/api/public/shares/${encodeURIComponent(token)}/download?t=${Date.now()}`;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => {
+      void load()
+        .catch((err: unknown) => {
+          setShare(null);
+          setError(err instanceof Error ? err.message : "This share link has reached its download limit.");
+        })
+        .finally(() => setBusy(false));
+    }, 800);
+  }
+
+  const remaining =
+    share?.maxDownloads == null ? null : Math.max(0, share.maxDownloads - share.downloadCount);
 
   return (
     <div className="auth-wrap">
@@ -103,9 +131,18 @@ export function PublicSharePage() {
             <p>
               <strong>{share.filename}</strong>
             </p>
-            <a className="button" href={`/api/public/shares/${token}/download`}>
-              Download
-            </a>
+            {remaining !== null && (
+              <p className="muted">
+                {remaining} download{remaining === 1 ? "" : "s"} remaining
+              </p>
+            )}
+            {remaining === 0 ? (
+              <p className="error">This share link has reached its download limit.</p>
+            ) : (
+              <button onClick={() => void download()} disabled={busy}>
+                {busy ? "Downloading…" : "Download"}
+              </button>
+            )}
           </>
         )}
       </div>

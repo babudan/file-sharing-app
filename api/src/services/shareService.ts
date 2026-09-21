@@ -150,6 +150,8 @@ export async function getPublicShare(token: string, unlocked: boolean) {
       sizeBytes: null,
       mimeType: null,
       expiresAt: share!.expiresAt,
+      maxDownloads: share!.maxDownloads,
+      downloadCount: share!.downloadCount,
     };
   }
   return {
@@ -160,6 +162,8 @@ export async function getPublicShare(token: string, unlocked: boolean) {
     sizeBytes: share!.document.sizeBytes,
     mimeType: share!.document.mimeType,
     expiresAt: share!.expiresAt,
+    maxDownloads: share!.maxDownloads,
+    downloadCount: share!.downloadCount,
   };
 }
 

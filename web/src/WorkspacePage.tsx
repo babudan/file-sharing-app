@@ -209,6 +209,7 @@ function ShareModal({ documentId, onClose }: { documentId: string; onClose: () =
   const [maxDownloads, setMaxDownloads] = useState("");
   const [password, setPassword] = useState("");
   const [createdUrl, setCreatedUrl] = useState("");
+  const [copiedUrl, setCopiedUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -254,6 +255,10 @@ function ShareModal({ documentId, onClose }: { documentId: string; onClose: () =
       setCreatedUrl(share.url);
       setPassword("");
       await load();
+      await navigator.clipboard.writeText(share.url).then(
+        () => setCopiedUrl(share.url),
+        () => undefined,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create the link.");
     } finally {
@@ -265,7 +270,10 @@ function ShareModal({ documentId, onClose }: { documentId: string; onClose: () =
     <div className="modal-backdrop" onClick={onClose}>
       <div className="card modal stack" onClick={(e) => e.stopPropagation()}>
         <h3>Share outside the team</h3>
-        <p className="muted">Anyone with the link can download. Revoke it when you are done.</p>
+        <p className="muted">
+          Anyone with a link can download. Each time you create a link you get a new URL — useful for different people
+          or settings. Revoke a link to turn only that one off.
+        </p>
         <form className="stack" onSubmit={create} autoComplete="off">
           <label>
             Expires in hours
@@ -302,25 +310,35 @@ function ShareModal({ documentId, onClose }: { documentId: string; onClose: () =
             />
           </label>
           {error && <div className="error">{error}</div>}
-          <button disabled={busy}>{busy ? "Creating…" : "Create link"}</button>
+          <button disabled={busy}>{busy ? "Creating…" : shares.length ? "Create another link" : "Create link"}</button>
         </form>
-        {createdUrl && (
-          <p>
-            Copy this link: <code>{createdUrl}</code>
-          </p>
-        )}
+        {shares.length > 0 && <h3>Active links</h3>}
         {shares.map((share) => (
-          <div key={share.id} className="row">
-            <code>{share.url}</code>
-            <button
-              className="secondary"
-              onClick={async () => {
-                await api.revokeShare(share.id);
-                await load();
-              }}
-            >
-              Revoke
-            </button>
+          <div key={share.id} className={share.url === createdUrl ? "share-row new" : "share-row"}>
+            <div className="share-url">{share.url}</div>
+            <div className="share-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(share.url);
+                  setCopiedUrl(share.url);
+                }}
+              >
+                {copiedUrl === share.url ? "Copied" : "Copy"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={async () => {
+                  await api.revokeShare(share.id);
+                  if (createdUrl === share.url) setCreatedUrl("");
+                  await load();
+                }}
+              >
+                Revoke
+              </button>
+            </div>
           </div>
         ))}
         <button className="secondary" onClick={onClose}>
